@@ -281,6 +281,36 @@ app.get('/api/auth/me', async (req, res) => {
   }
 });
 
+// Simple endpoint to return the logged-in user's display name
+app.get('/api/user/name', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (!token) {
+      return res.status(401).json({ error: 'Missing token' });
+    }
+
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const user = await User.findById(payload.id).select('fullName email');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const name = (user.fullName && user.fullName.trim()) || (user.email && user.email.split('@')[0]) || '';
+    res.json({ name });
+  } catch (err) {
+    console.error('User name route error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
