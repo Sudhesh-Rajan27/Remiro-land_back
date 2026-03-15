@@ -111,7 +111,7 @@ function toAuthUser(user) {
 }
 
 // Google OAuth (Authorization Code Flow) – redirect_uri must match frontend and Google Console
-const REDIRECT_URI = 'http://localhost:5173';
+const REDIRECT_URI = 'https://remiro.in';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 function getGoogleOAuth2Client() {
