@@ -178,12 +178,29 @@ app.post('/api/seats/reset', async (req, res) => {
 });
 
 // Register for early access and decrement seats
+// Uses authenticated user's email (no email in body)
 app.post('/api/register', async (req, res) => {
   try {
-    const { email } = req.body || {};
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (!token) {
+      return res.status(401).json({ error: 'Missing token' });
     }
+
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const user = await User.findById(payload.id).select('email');
+    if (!user || !user.email) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const email = user.email.toLowerCase().trim();
 
     const existing = await WaitlistEntry.findOne({ email });
     if (existing) {
@@ -191,6 +208,7 @@ app.post('/api/register', async (req, res) => {
       return res.status(200).json({
         message: 'You are already registered for early access.',
         seatsLeft,
+        enrolled: true,
       });
     }
 
@@ -208,9 +226,46 @@ app.post('/api/register', async (req, res) => {
     res.status(201).json({
       message: 'Successfully registered for early access!',
       seatsLeft,
+      enrolled: true,
     });
   } catch (err) {
     console.error('Register error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Check early-access enrollment status for the authenticated user
+app.get('/api/register/status', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (!token) {
+      return res.status(401).json({ error: 'Missing token' });
+    }
+
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const user = await User.findById(payload.id).select('email');
+    if (!user || !user.email) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const email = user.email.toLowerCase().trim();
+    const existing = await WaitlistEntry.findOne({ email });
+    const seatsLeft = await getSeatsLeft();
+
+    res.json({
+      enrolled: !!existing,
+      seatsLeft,
+    });
+  } catch (err) {
+    console.error('Register status error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
