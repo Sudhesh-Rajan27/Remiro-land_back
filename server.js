@@ -1,15 +1,37 @@
-require('dotenv').config();
+const path = require('node:path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const { v2: cloudinary } = require('cloudinary');
 const { OAuth2Client } = require('google-auth-library');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'remiro_dev_secret_change_me';
+
+// Cloudinary configuration
+cloudinary.config({
+  cloudinary_url: process.env.CLOUDINARY_URL,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+});
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    cb(null, true);
+  },
+});
 
 // Request logging (must be first to track every hit)
 app.use((req, res, next) => {
@@ -45,6 +67,8 @@ const userSchema = new mongoose.Schema(
     passwordHash: { type: String, required: false },
     googleId: { type: String, unique: true, sparse: true },
     picture: { type: String, trim: true },
+    profilePic: { type: String, trim: true },
+    public_id: { type: String, trim: true },
     region: { type: String, trim: true },
     linkedin: { type: String, trim: true },
   },
@@ -106,12 +130,28 @@ function toAuthUser(user) {
     email: user.email,
     region: user.region,
     linkedin: user.linkedin,
-    picture: user.picture || null,
+    picture: user.picture || user.profilePic || null,
+    profilePic: user.profilePic || null,
+    public_id: user.public_id || null,
   };
 }
 
+function getAuthUserIdFromRequest(req) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) {
+    return null;
+  }
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    return payload?.id || null;
+  } catch {
+    return null;
+  }
+}
+
 // Google OAuth (Authorization Code Flow) – redirect_uri must match frontend and Google Console
-const REDIRECT_URI = 'https://remiro.in';
+const REDIRECT_URI = 'http://localhost:5173';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 function getGoogleOAuth2Client() {
@@ -131,6 +171,70 @@ app.get('/api/health', (req, res) => {
 // Debug: verify server receives requests
 app.get('/api/test', (req, res) => {
   res.json({ ok: true, message: 'GET /api/test hit' });
+});
+
+// Upload profile picture and save on user document.
+app.post('/upload-profile-pic', upload.single('profilePic'), async (req, res) => {
+  try {
+    const userId = getAuthUserIdFromRequest(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'Missing or invalid token' });
+    }
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'profilePic image file is required' });
+    }
+    if (!process.env.CLOUDINARY_URL && !process.env.CLOUDINARY_CLOUD_NAME) {
+      return res.status(500).json({ error: 'Cloudinary is not configured' });
+    }
+
+    const uploaded = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'profile_pics',
+          resource_type: 'image',
+          transformation: [{ width: 200, height: 200, crop: 'fill' }],
+        },
+        (error, result) => {
+          if (error) return reject(error);
+          resolve(result);
+        }
+      );
+      stream.end(req.file.buffer);
+    });
+
+    const result = uploaded || {};
+    const secureUrl = result.secure_url;
+    const publicId = result.public_id;
+    if (!secureUrl || !publicId) {
+      return res.status(500).json({ error: 'Failed to upload image to Cloudinary' });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        $set: {
+          profilePic: secureUrl,
+          public_id: publicId,
+          picture: secureUrl,
+        },
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json({
+      message: 'Profile picture uploaded successfully',
+      profilePic: secureUrl,
+      public_id: publicId,
+      secure_url: secureUrl,
+    });
+  } catch (err) {
+    console.error('Profile picture upload error:', err);
+    return res.status(500).json({ error: 'Failed to upload profile picture' });
+  }
 });
 app.post('/api/test-post', (req, res) => {
   res.json({ ok: true, message: 'POST /api/test-post hit', body: req.body });
